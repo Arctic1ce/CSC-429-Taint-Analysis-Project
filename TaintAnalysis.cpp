@@ -6,5 +6,6 @@
 using namespace llvm;
 
 PreservedAnalyses TaintAnalysis::run(Function &F, FunctionAnalysisManager &AM) {
+    errs() << F.getName() << "\n";
     return PreservedAnalyses::all();
 }
