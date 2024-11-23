@@ -3,11 +3,11 @@
 
 #include "llvm/IR/PassManager.h"
 
-namespace llvm {                                                                 
+namespace llvm {
 
 class TaintAnalysis : public PassInfoMixin<TaintAnalysis> {
 public:
-    PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM);
+    PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM);
 };
 
 } // namespace llvm

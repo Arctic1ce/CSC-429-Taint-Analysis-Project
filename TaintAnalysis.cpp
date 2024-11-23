@@ -1,35 +1,111 @@
 #include "llvm/Transforms/Instrumentation/TaintAnalysis.h"
+#include "llvm/IR/Module.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/IRBuilder.h"
+#include "../../libc/examples/lab2/dynamic_type_checking/shadowlib.h"
 
 using namespace llvm;
 
-PreservedAnalyses TaintAnalysis::run(Function &F, FunctionAnalysisManager &AM) {
-    errs() << "Analyzing function: " << F.getName() << "\n";
+PreservedAnalyses TaintAnalysis::run(Module &M, ModuleAnalysisManager &AM) {
+    errs() << "Analyzing module: " << M.getName() << "\n";
     
-    for (auto &BB : F) {
-        for (auto &I : BB) {
-            if (CallInst *CI = dyn_cast<CallInst>(&I)) {
-                Function *CalledFunc = CI->getCalledFunction();
-                if (CalledFunc) {
-                    StringRef FuncName = CalledFunc->getName();
+    LLVMContext &context = M.getContext();
+    Type *Int32Type = Type::getInt32Ty(context);
+    Type *VoidPtrType = PointerType::get(Type::getInt8Ty(context), 0);
 
-                    // check for scaf and gets function calls
-                    if (FuncName == "scanf" || 
-                        FuncName == "gets") {
-                        errs() << "Found user input function: " << FuncName << " at ";
-                        I.getDebugLoc().print(errs());
-                        errs() << "\n";
+    Module *module = &M;
+    FunctionCallee InsertFunc = module->getOrInsertFunction(
+        "__shadowlib_insert",
+        FunctionType::get(Type::getVoidTy(context),
+            {VoidPtrType, Int32Type},
+            false)
+    );
 
-                        // for scanf, the first argument is the format string, subsequent arguments are pointers
-                        // for gets, the first and only argument is the destination buffer
-                        Value *DestAddr = CI->getArgOperand(FuncName == "scanf" ? 1 : 0);
-                        errs() << "Destination address: ";
-                        DestAddr->print(errs());
-                        errs() << "\n";
+    FunctionCallee GetFunc = module->getOrInsertFunction(
+        "__shadowlib_get",
+        FunctionType::get(Type::getInt32Ty(context),
+            {VoidPtrType},
+            false)
+    );
+
+    FunctionCallee AssertFunc = module->getOrInsertFunction(
+        "__shadowlib_assert",
+        FunctionType::get(Type::getVoidTy(context),
+            {Int32Type, Int32Type, VoidPtrType},
+            false)
+    );
+
+    FunctionCallee PrintFunc = module->getOrInsertFunction(
+        "__shadowlib_print",
+        FunctionType::get(Type::getVoidTy(context), {}, false)
+    );
+
+    for (Function &F : M) {
+        if (F.empty()) continue;
+
+        for (auto &BB : F) {
+            for (auto &I : BB) {
+
+                if (CallInst *CI = dyn_cast<CallInst>(&I)) {
+                    Function *CalledFunc = CI->getCalledFunction();
+                    if (CalledFunc) {
+                        StringRef FuncName = CalledFunc->getName();
+
+                        if (FuncName == "scanf" || FuncName == "gets") {
+                            errs() << "Found user input function: " << FuncName << " at ";
+                            I.getDebugLoc().print(errs());
+                            errs() << "\n";
+
+                            Value *DestAddr = CI->getArgOperand(FuncName == "scanf" ? 1 : 0);
+
+                            IRBuilder<> Builder(CI->getNextNode());
+
+                            Value *voidPtr = Builder.CreateBitCast(DestAddr, VoidPtrType);
+                            Value *type = ConstantInt::get(Int32Type, 1);
+                            Builder.CreateCall(InsertFunc, {voidPtr, type});
+
+                            outs() << "User input! Stored address: " << DestAddr << "\ttainted: " << 1 << "\n";
+                        }
                     }
                 }
+
+                if (StoreInst *SI = dyn_cast<StoreInst>(&I)) {
+                    Value *StoreAddr = SI->getPointerOperand();
+                    Value *StoredValue = SI->getValueOperand();
+                    
+                    IRBuilder<> Builder(&I);
+                    Value *voidPtr = Builder.CreateBitCast(StoreAddr, VoidPtrType);
+                    
+                    // Check if the stored value is a load instruction
+                    if (LoadInst *LI = dyn_cast<LoadInst>(StoredValue)) {
+                        Value *LoadAddr = LI->getPointerOperand();
+                        Value *loadVoidPtr = Builder.CreateBitCast(LoadAddr, VoidPtrType);
+                        
+                        // Get taint status of loaded value
+                        Value *taintStatus = Builder.CreateCall(GetFunc, {loadVoidPtr});
+                        
+                        // Propagate taint status to stored address
+                        Builder.CreateCall(InsertFunc, {voidPtr, taintStatus});
+                        
+                        outs() << "Propagated taint - Stored address: " << StoreAddr 
+                              << " from loaded address: " << LoadAddr << "\n";
+                    } else {
+                        // Default case (untainted)
+                        Value *type = ConstantInt::get(Int32Type, 0);
+                        Builder.CreateCall(InsertFunc, {voidPtr, type});
+                        
+                        outs() << "Stored address: " << StoreAddr << "\ttainted: " << 0 << "\n";
+                    }
+                }
+            }
+        }
+
+        if (!F.getEntryBlock().empty()) {
+            Instruction *Terminator = F.getEntryBlock().getTerminator();
+            if (Terminator) {
+                IRBuilder<> Builder(Terminator);
+                Builder.CreateCall(PrintFunc);
             }
         }
     }
