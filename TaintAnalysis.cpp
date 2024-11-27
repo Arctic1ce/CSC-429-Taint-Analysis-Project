@@ -61,10 +61,26 @@ PreservedAnalyses TaintAnalysis::run(Module &M, ModuleAnalysisManager &AM) {
                             IRBuilder<> Builder(CI->getNextNode());
 
                             Value *voidPtr = Builder.CreateBitCast(DestAddr, VoidPtrType);
-                            Value *type = ConstantInt::get(Int32Type, 1);
-                            Builder.CreateCall(InsertFunc, {voidPtr, type});
+                            Value *taintStatus = ConstantInt::get(Int32Type, 1);
+                            Builder.CreateCall(InsertFunc, {voidPtr, taintStatus});
 
                             outs() << "User input! Stored address: " << DestAddr << "\ttainted: " << 1 << "\n";
+                        } else if (!CalledFunc->getReturnType()->isVoidTy()) {
+                            // This function returns a value
+                            Value *ReturnedValue = CI;  // The instruction itself represents the returned value
+                            
+                            // Now, we need to handle the destination variable (e.g., t in t = function())
+                            // This would be the StoreInst, not an argument to the function call
+                            if (StoreInst *SI = dyn_cast<StoreInst>(CI->getNextNode())) { // Check for the next store instruction
+                                Value *DestAddr = SI->getPointerOperand();  // Get the address of the variable being assigned to
+
+                                IRBuilder<> Builder(&I);
+                                Value *voidPtr = Builder.CreateBitCast(DestAddr, VoidPtrType);
+                                Value *taintStatus = ConstantInt::get(Int32Type, 1);
+                                Builder.CreateCall(InsertFunc, {voidPtr, taintStatus});  // Insert the taint into the destination address
+
+                                outs() << "Function call result assigned to variable. Stored address: " << DestAddr << "\ttainted: " << 1 << "\n";
+                            }
                         }
                     }
                 }
@@ -91,8 +107,8 @@ PreservedAnalyses TaintAnalysis::run(Module &M, ModuleAnalysisManager &AM) {
                               << " from loaded address: " << LoadAddr << "\n";
                     } else {
                         // Default case (untainted)
-                        Value *type = ConstantInt::get(Int32Type, 0);
-                        Builder.CreateCall(InsertFunc, {voidPtr, type});
+                        Value *taintStatus = ConstantInt::get(Int32Type, 0);
+                        Builder.CreateCall(InsertFunc, {voidPtr, taintStatus});
                         
                         outs() << "Stored address: " << StoreAddr << "\ttainted: " << 0 << "\n";
                     }
@@ -125,11 +141,21 @@ PreservedAnalyses TaintAnalysis::run(Module &M, ModuleAnalysisManager &AM) {
                     // Combine taint statuses (taint if either operand is tainted)
                     Value *combinedTaint = Builder.CreateOr(taintStatus1, taintStatus2);
 
-                    // Mark the result of the binary operation as tainted if applicable
-                    Value *resultVoidPtr = Builder.CreateBitCast(&I, VoidPtrType);
-                    Builder.CreateCall(InsertFunc, {resultVoidPtr, combinedTaint});
+                    // If the result of the binary operation is used in a store, track it as a temporary variable
+                    if (StoreInst *SI = dyn_cast<StoreInst>(I.getNextNode())) {
+                        Value *DestAddr = SI->getPointerOperand();
+                        IRBuilder<> StoreBuilder(&I);
+                        Value *voidPtr = StoreBuilder.CreateBitCast(DestAddr, VoidPtrType);
+                        StoreBuilder.CreateCall(InsertFunc, {voidPtr, combinedTaint});
 
-                    outs() << "Binary operation result tainted based on operands. Instruction: " << I << "\n";
+                        outs() << "Binary operation result tainted and stored in: " << DestAddr << "\n";
+                    } else{
+                        // Otherwise, treat it as an intermediate value used in further computations
+                        Value *resultVoidPtr = Builder.CreateBitCast(&I, VoidPtrType);
+                        Builder.CreateCall(InsertFunc, {resultVoidPtr, combinedTaint});
+                    }
+
+                    outs() << "Binary operation result tainted based on operands. Stored address: " << I << "\n";
                 }
 
 
