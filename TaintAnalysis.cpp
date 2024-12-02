@@ -77,8 +77,53 @@ PreservedAnalyses TaintAnalysis::run(Module &M, ModuleAnalysisManager &AM) {
                     IRBuilder<> Builder(&I);
                     Value *voidPtr = Builder.CreateBitCast(StoreAddr, VoidPtrType);
                     
-                    // Check if the stored value is a load instruction
-                    if (LoadInst *LI = dyn_cast<LoadInst>(StoredValue)) {
+                    //LoadInst *LI = dyn_cast<LoadInst>(StoredValue)
+                    if (BinaryOperator *BO = dyn_cast<BinaryOperator>(StoredValue)) {
+                        outs() << "checking binary operator\n";
+                        Value *Operand1 = BO->getOperand(0);
+                        Value *Operand2 = BO->getOperand(1);
+
+                        IRBuilder<> Builder(&I);
+
+                        Value *taintStatus1;
+                        if (isa<Constant>(Operand1)) {
+                            taintStatus1 = ConstantInt::get(Int32Type, 0); // Un-tainted for constants
+                        } else if (LoadInst *LI = dyn_cast<LoadInst>(Operand1)) {
+                            Value *LoadAddr = LI->getPointerOperand();
+
+                            outs() << *LoadAddr << "\n";
+
+                            outs() << "ITS A LOAD!\n";
+                            Value *loadVoidPtr = Builder.CreateBitCast(LoadAddr, VoidPtrType);
+                            outs() << "Address CASTED\n";
+                            
+                            // Get taint status of loaded value
+                            taintStatus1 = Builder.CreateCall(GetFunc, {loadVoidPtr});
+                        }
+
+                        Value *taintStatus2;
+                        if (isa<Constant>(Operand2)) {
+                            taintStatus2 = ConstantInt::get(Int32Type, 0); // Un-tainted for constants
+                        } else if (LoadInst *LI = dyn_cast<LoadInst>(Operand2)) {
+                            Value *LoadAddr = LI->getPointerOperand();
+
+                            outs() << *LoadAddr << "\n";
+
+                            outs() << "ITS A LOAD!\n";
+                            Value *loadVoidPtr = Builder.CreateBitCast(LoadAddr, VoidPtrType);
+                            outs() << "Address CASTED\n";
+                            
+                            // Get taint status of loaded value
+                            taintStatus2 = Builder.CreateCall(GetFunc, {loadVoidPtr});
+                        }
+                        
+                        Value *combinedTaint = Builder.CreateOr(taintStatus1, taintStatus2);
+
+                        // Propagate taint status to stored address
+                        Builder.CreateCall(InsertFunc, {voidPtr, combinedTaint});
+                        
+                        outs() << "Propagated taint BinaryOperator - Stored address: " << StoreAddr << "\n";
+                    } else if (LoadInst *LI = dyn_cast<LoadInst>(StoredValue)) { // Check if the stored value is a load instruction
                         Value *LoadAddr = LI->getPointerOperand();
                         Value *loadVoidPtr = Builder.CreateBitCast(LoadAddr, VoidPtrType);
                         
