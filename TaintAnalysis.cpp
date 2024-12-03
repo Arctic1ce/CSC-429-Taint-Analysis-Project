@@ -19,7 +19,7 @@ PreservedAnalyses TaintAnalysis::run(Module &M, ModuleAnalysisManager &AM) {
     FunctionCallee InsertFunc = module->getOrInsertFunction(
         "__shadowlib_insert",
         FunctionType::get(Type::getVoidTy(context),
-            {VoidPtrType, Int32Type},
+            {VoidPtrType, Int32Type, PointerType::get(Type::getInt8Ty(context), 0)},
             false)
     );
 
@@ -27,13 +27,6 @@ PreservedAnalyses TaintAnalysis::run(Module &M, ModuleAnalysisManager &AM) {
         "__shadowlib_get",
         FunctionType::get(Type::getInt32Ty(context),
             {VoidPtrType},
-            false)
-    );
-
-    FunctionCallee AssertFunc = module->getOrInsertFunction(
-        "__shadowlib_assert",
-        FunctionType::get(Type::getVoidTy(context),
-            {Int32Type, Int32Type, VoidPtrType},
             false)
     );
 
@@ -59,43 +52,63 @@ PreservedAnalyses TaintAnalysis::run(Module &M, ModuleAnalysisManager &AM) {
                             errs() << "\n";
 
                             Value *DestAddr = CI->getArgOperand(FuncName == "scanf" ? 1 : 0);
+                            StringRef VarName;
+                            if (auto *AllocInst = dyn_cast<AllocaInst>(DestAddr)) {
+                                outs() << "Variable name: " << AllocInst->getName() << "\n";
+                                VarName = AllocInst->getName();
+                            } else if (LoadInst *LI = dyn_cast<LoadInst>(DestAddr)) {
+                                outs() << "Variable name 2: " << LI->getPointerOperand()->getName() << "\n";
+                                VarName = LI->getPointerOperand()->getName();
+                            }
 
                             IRBuilder<> Builder(CI->getNextNode());
 
                             Value *voidPtr = Builder.CreateBitCast(DestAddr, VoidPtrType);
                             Value *type = ConstantInt::get(Int32Type, 1);
-                            Builder.CreateCall(InsertFunc, {voidPtr, type});
+                            //Builder.CreateCall(InsertFunc, {voidPtr, type});
+                            //Value *varName = ConstantDataArray::getString(context, "user_input");
+                            Value *varName = ConstantDataArray::getString(context, VarName);
+                            Value *varNamePtr = Builder.CreateGlobalStringPtr(VarName);
+                            Builder.CreateCall(InsertFunc, {voidPtr, type, varNamePtr});
 
                             outs() << "User input! Stored address: " << DestAddr << "\ttainted: " << 1 << "\n";
                         } else {
-                            outs() << "Function: " << FuncName << "\n";
+                            if (FuncName != "printf") {
+                                outs() << "Function: " << FuncName << "\n";
 
-                            IRBuilder<> Builder(&I);
-                            
-                            for (unsigned i = 0; i < CI->arg_size(); ++i) {
-                                Value *ArgAddr = CI->getArgOperand(i);
+                                IRBuilder<> Builder(&I);
+                                
+                                for (unsigned i = 0; i < CI->arg_size(); ++i) {
+                                    Value *ArgAddr = CI->getArgOperand(i);
 
-                                if (LoadInst *LI = dyn_cast<LoadInst>(ArgAddr)) {
-                                    Value *LoadAddr = LI->getPointerOperand();
+                                    if (LoadInst *LI = dyn_cast<LoadInst>(ArgAddr)) {
+                                        Value *LoadAddr = LI->getPointerOperand();
+                                        StringRef VarName = LoadAddr->getName();
 
-                                    outs() << *LoadAddr << "\n";
+                                        outs() << "VarName: " << VarName << "\n";
 
-                                    outs() << "ITS A LOAD!\n";
-                                    Value *argVoidPtr = Builder.CreateBitCast(LoadAddr, VoidPtrType);
-                                    outs() << "Address CASTED\n";
+                                        outs() << *LoadAddr << "\n";
 
-                                    Value *type = ConstantInt::get(Int32Type, 1);
-                                    Builder.CreateCall(InsertFunc, {argVoidPtr, type});
-                                    outs() << "Tainted argument of function: " << FuncName << "\n";
+                                        outs() << "ITS A LOAD!\n";
+                                        Value *argVoidPtr = Builder.CreateBitCast(LoadAddr, VoidPtrType);
+                                        outs() << "Address CASTED\n";
+
+                                        Value *type = ConstantInt::get(Int32Type, 1);
+                                        Value *varName = ConstantDataArray::getString(context, VarName);
+                                        Value *varNamePtr = Builder.CreateGlobalStringPtr(VarName);
+                                        Builder.CreateCall(InsertFunc, {argVoidPtr, type, varNamePtr});
+                                        outs() << "Tainted argument of function: " << FuncName << "\n";
+                                    }
                                 }
                             }
                         }
                     }
-                }
-
-                else if (StoreInst *SI = dyn_cast<StoreInst>(&I)) {
+                } else if (StoreInst *SI = dyn_cast<StoreInst>(&I)) {
                     Value *StoreAddr = SI->getPointerOperand();
                     Value *StoredValue = SI->getValueOperand();
+                    StringRef VarName = StoreAddr->getName();
+
+                    outs() << "=====Stored Variable Name: " << VarName << "======\n";
                     
                     IRBuilder<> Builder(&I);
                     Value *voidPtr = Builder.CreateBitCast(StoreAddr, VoidPtrType);
@@ -143,7 +156,9 @@ PreservedAnalyses TaintAnalysis::run(Module &M, ModuleAnalysisManager &AM) {
                         Value *combinedTaint = Builder.CreateOr(taintStatus1, taintStatus2);
 
                         // Propagate taint status to stored address
-                        Builder.CreateCall(InsertFunc, {voidPtr, combinedTaint});
+                        Value *varName = ConstantDataArray::getString(context, VarName);
+                        Value *varNamePtr = Builder.CreateGlobalStringPtr(VarName);
+                        Builder.CreateCall(InsertFunc, {voidPtr, combinedTaint, varNamePtr});
                         
                         outs() << "Propagated taint BinaryOperator - Stored address: " << StoreAddr << "\n";
                     } else if (LoadInst *LI = dyn_cast<LoadInst>(StoredValue)) { // Check if the stored value is a load instruction
@@ -154,19 +169,25 @@ PreservedAnalyses TaintAnalysis::run(Module &M, ModuleAnalysisManager &AM) {
                         Value *taintStatus = Builder.CreateCall(GetFunc, {loadVoidPtr});
                         
                         // Propagate taint status to stored address
-                        Builder.CreateCall(InsertFunc, {voidPtr, taintStatus});
+                        Value *varName = ConstantDataArray::getString(context, VarName);
+                        Value *varNamePtr = Builder.CreateGlobalStringPtr(VarName);
+                        Builder.CreateCall(InsertFunc, {voidPtr, taintStatus, varNamePtr});
                         
                         outs() << "Propagated taint - Stored address: " << StoreAddr 
                               << " from loaded address: " << LoadAddr << "\n";
                     } else if (CallInst *CI = dyn_cast<CallInst>(StoredValue)) {
                         // Mark the stored result as tainted
                         Value *type = ConstantInt::get(Int32Type, 1);
-                        Builder.CreateCall(InsertFunc, {voidPtr, type});
+                        Value *varName = ConstantDataArray::getString(context, VarName);
+                        Value *varNamePtr = Builder.CreateGlobalStringPtr(VarName);
+                        Builder.CreateCall(InsertFunc, {voidPtr, type, varNamePtr});
                         outs() << "Function call result stored at address: " << StoreAddr << "\ttainted: " << 1 << "\n";
                     } else {
                         // Default case (untainted)
                         Value *type = ConstantInt::get(Int32Type, 0);
-                        Builder.CreateCall(InsertFunc, {voidPtr, type});
+                        Value *varName = ConstantDataArray::getString(context, VarName);
+                        Value *varNamePtr = Builder.CreateGlobalStringPtr(VarName);
+                        Builder.CreateCall(InsertFunc, {voidPtr, type, varNamePtr});
                         
                         outs() << "Default Stored address: " << StoreAddr << "\ttainted: " << 0 << "\n";
                     }
