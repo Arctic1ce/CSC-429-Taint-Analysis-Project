@@ -3,6 +3,7 @@
 #include "llvm/IR/Function.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/AbstractCallSite.h"
 #include "../../libc/examples/lab2/dynamic_type_checking/shadowlib.h"
 
 using namespace llvm;
@@ -66,11 +67,33 @@ PreservedAnalyses TaintAnalysis::run(Module &M, ModuleAnalysisManager &AM) {
                             Builder.CreateCall(InsertFunc, {voidPtr, type});
 
                             outs() << "User input! Stored address: " << DestAddr << "\ttainted: " << 1 << "\n";
+                        } else {
+                            outs() << "Function: " << FuncName << "\n";
+
+                            IRBuilder<> Builder(&I);
+                            
+                            for (unsigned i = 0; i < CI->arg_size(); ++i) {
+                                Value *ArgAddr = CI->getArgOperand(i);
+
+                                if (LoadInst *LI = dyn_cast<LoadInst>(ArgAddr)) {
+                                    Value *LoadAddr = LI->getPointerOperand();
+
+                                    outs() << *LoadAddr << "\n";
+
+                                    outs() << "ITS A LOAD!\n";
+                                    Value *argVoidPtr = Builder.CreateBitCast(LoadAddr, VoidPtrType);
+                                    outs() << "Address CASTED\n";
+
+                                    Value *type = ConstantInt::get(Int32Type, 1);
+                                    Builder.CreateCall(InsertFunc, {argVoidPtr, type});
+                                    outs() << "Tainted argument of function: " << FuncName << "\n";
+                                }
+                            }
                         }
                     }
                 }
 
-                if (StoreInst *SI = dyn_cast<StoreInst>(&I)) {
+                else if (StoreInst *SI = dyn_cast<StoreInst>(&I)) {
                     Value *StoreAddr = SI->getPointerOperand();
                     Value *StoredValue = SI->getValueOperand();
                     
@@ -135,12 +158,17 @@ PreservedAnalyses TaintAnalysis::run(Module &M, ModuleAnalysisManager &AM) {
                         
                         outs() << "Propagated taint - Stored address: " << StoreAddr 
                               << " from loaded address: " << LoadAddr << "\n";
+                    } else if (CallInst *CI = dyn_cast<CallInst>(StoredValue)) {
+                        // Mark the stored result as tainted
+                        Value *type = ConstantInt::get(Int32Type, 1);
+                        Builder.CreateCall(InsertFunc, {voidPtr, type});
+                        outs() << "Function call result stored at address: " << StoreAddr << "\ttainted: " << 1 << "\n";
                     } else {
                         // Default case (untainted)
                         Value *type = ConstantInt::get(Int32Type, 0);
                         Builder.CreateCall(InsertFunc, {voidPtr, type});
                         
-                        outs() << "Stored address: " << StoreAddr << "\ttainted: " << 0 << "\n";
+                        outs() << "Default Stored address: " << StoreAddr << "\ttainted: " << 0 << "\n";
                     }
                 }
             }
